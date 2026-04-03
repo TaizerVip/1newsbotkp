@@ -457,6 +457,20 @@ def set_admin(user_id, is_admin_val):
     except Exception as e:
         logger.error(f"Ошибка set_admin: {e}")
 
+def close_ticket(ticket_id, closed_by):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        closed_at = datetime.now().isoformat()
+        c.execute("UPDATE tickets SET status = 'closed', closed_at = ?, closed_by = ? WHERE ticket_id = ?",
+                  (closed_at, closed_by, ticket_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка close_ticket: {e}")
+        return False
+
 def create_ticket(user_id, username, first_name, message):
     try:
         if is_user_blocked(user_id):
@@ -859,24 +873,20 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['reply_to_ticket'] = ticket_id
         await query.edit_message_text(f"✏️ **Ответ на тикет #{ticket_id}**\n\nНапишите ваш ответ.\n\nДля отмены /cancel")
     elif data.startswith("ticket_close_"):
-        parts = data.split("_")
-        if len(parts) >= 3:
-            ticket_id = parts[2]
-            close_ticket(ticket_id, user.id)
-            
-            target_user_id = get_ticket_user_id(ticket_id)
-            if target_user_id:
-                try:
-                    await context.bot.send_message(
-                        chat_id=target_user_id,
-                        text=f"✅ Ваш тикет #{ticket_id} был закрыт администратором.\nСпасибо за обращение!"
-                    )
-                except:
-                    pass
-            
-            await query.edit_message_text(f"✅ Тикет #{ticket_id} закрыт", reply_markup=get_admin_keyboard())
-        else:
-            await query.edit_message_text("❌ Ошибка: неверный формат данных")
+        ticket_id = data.split("_")[2]
+        close_ticket(ticket_id, user.id)
+        
+        target_user_id = get_ticket_user_id(ticket_id)
+        if target_user_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"✅ Ваш тикет #{ticket_id} был закрыт администратором.\nСпасибо за обращение!"
+                )
+            except:
+                pass
+        
+        await query.edit_message_text(f"✅ Тикет #{ticket_id} закрыт", reply_markup=get_admin_keyboard())
     elif data.startswith("ticket_block_"):
         parts = data.split("_")
         if len(parts) >= 4:
