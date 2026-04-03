@@ -199,6 +199,40 @@ def update_last_ticket_time(user_id):
     except Exception as e:
         logger.error(f"Ошибка update_last_ticket_time: {e}")
 
+# ==================== ФУНКЦИИ ДЛЯ TELEGRAM PREMIUM ====================
+async def is_telegram_premium(user_id, context):
+    """Проверить, есть ли у пользователя Telegram Premium (без отправки сообщения)"""
+    try:
+        chat = await context.bot.get_chat(user_id)
+        return getattr(chat, 'premium', False)
+    except Exception as e:
+        logger.error(f"Ошибка проверки Premium статуса {user_id}: {e}")
+        return False
+
+async def get_telegram_premium_users(context):
+    """Получить всех пользователей с Telegram Premium"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user_id, username, first_name FROM users")
+    all_users = c.fetchall()
+    conn.close()
+    
+    premium_users = []
+    total = len(all_users)
+    
+    for i, user in enumerate(all_users):
+        try:
+            if await is_telegram_premium(user[0], context):
+                premium_users.append(user)
+        except:
+            pass
+        
+        # Небольшая задержка чтобы не спамить API
+        if i % 50 == 0:
+            await asyncio.sleep(0.1)
+    
+    return premium_users
+
 # ==================== ФУНКЦИИ БД ====================
 def get_user_stats(user_id):
     try:
@@ -611,10 +645,22 @@ def get_main_keyboard():
 def get_group_keyboard(user_id, is_published=False):
     if is_published:
         return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Выложить еще раз", callback_data=f"republish_{user_id}")]])
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Выложить в канал", callback_data=f"publish_{user_id}"), InlineKeyboardButton("💬 Ответить", callback_data=f"reply_to_user_{user_id}")],
-        [InlineKeyboardButton("❌ Удалить", callback_data=f"delete_{user_id}"), InlineKeyboardButton("🚫 Заблокировать", callback_data=f"block_{user_id}")]
-    ])
+    
+    # Проверяем, заблокирован ли пользователь
+    is_blocked = is_user_blocked(user_id)
+    
+    if is_blocked:
+        # Показываем кнопку разблокировки
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Разблокировать", callback_data=f"unblock_{user_id}")]
+        ])
+    else:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Выложить в канал", callback_data=f"publish_{user_id}"),
+             InlineKeyboardButton("💬 Ответить", callback_data=f"reply_to_user_{user_id}")],
+            [InlineKeyboardButton("❌ Удалить", callback_data=f"delete_{user_id}"),
+             InlineKeyboardButton("🚫 Заблокировать", callback_data=f"block_{user_id}")]
+        ])
 
 def get_admin_keyboard():
     open_tickets = get_open_tickets_count()
@@ -625,7 +671,8 @@ def get_admin_keyboard():
         [InlineKeyboardButton("🔍 Поиск пользователя", callback_data="admin_search")],
         [InlineKeyboardButton("🏆 Топ", callback_data="admin_top")],
         [InlineKeyboardButton(tickets_button, callback_data="admin_tickets")],
-        [InlineKeyboardButton("📨 Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("📨 Рассылка (всем)", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("⭐ Рассылка (Telegram Premium)", callback_data="admin_premium_broadcast")],
         [InlineKeyboardButton("💣 СПАМ РАССЫЛКА", callback_data="admin_spam")],
         [InlineKeyboardButton("💬 Отправить сообщение", callback_data="admin_send_message")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="admin_settings")],
@@ -802,6 +849,14 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "admin_broadcast":
         context.user_data['broadcast_mode'] = True
         await query.edit_message_text(f"📨 Введите сообщение для рассылки\n\n👥 Будет отправлено: {get_total_users()} пользователям")
+    elif data == "admin_premium_broadcast":
+        context.user_data['premium_broadcast_mode'] = True
+        await query.edit_message_text(
+            f"⭐ **РАССЫЛКА ДЛЯ TELEGRAM PREMIUM**\n\n"
+            f"📨 Введите сообщение для рассылки только пользователям с Telegram Premium:\n\n"
+            f"⚠️ Поиск всех Premium пользователей может занять некоторое время.",
+            parse_mode=ParseMode.MARKDOWN
+        )
     elif data == "admin_spam":
         context.user_data['spam_mode'] = True
         await query.edit_message_text("💣 **СПАМ РАССЫЛКА**\n\nВведите: `ID количество текст`\nПример: `123456789 500 Привет!`")
@@ -864,6 +919,15 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "broadcast_cancel":
         context.user_data.pop('broadcast_mode', None)
         context.user_data.pop('broadcast_message', None)
+        await query.edit_message_text("❌ Отменено", reply_markup=get_admin_keyboard())
+    elif data == "premium_broadcast_confirm":
+        if 'premium_broadcast_message' in context.user_data:
+            await start_premium_broadcast(update, context)
+        else:
+            await query.edit_message_text("❌ Сообщение не найдено")
+    elif data == "premium_broadcast_cancel":
+        context.user_data.pop('premium_broadcast_mode', None)
+        context.user_data.pop('premium_broadcast_message', None)
         await query.edit_message_text("❌ Отменено", reply_markup=get_admin_keyboard())
     elif data.startswith("ticket_reply_"):
         ticket_id = data.split("_")[2]
@@ -1026,6 +1090,45 @@ async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_user.id, text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
     context.user_data.pop('broadcast_mode', None)
     context.user_data.pop('broadcast_message', None)
+
+async def start_premium_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    msg = context.user_data['premium_broadcast_message']
+    
+    await query.edit_message_text("⭐ Ищу пользователей с Telegram Premium... Это может занять время.")
+    
+    # Получаем всех Premium пользователей
+    premium_users = await get_telegram_premium_users(context)
+    total = len(premium_users)
+    
+    if total == 0:
+        await query.edit_message_text("❌ Не найдено пользователей с Telegram Premium!", reply_markup=get_admin_keyboard())
+        context.user_data.pop('premium_broadcast_mode', None)
+        context.user_data.pop('premium_broadcast_message', None)
+        return
+    
+    await query.edit_message_text(f"⭐ Найдено {total} Premium пользователей!\n\n📨 Начинаю рассылку...")
+    
+    sent = 0
+    failed = 0
+    
+    for user in premium_users:
+        try:
+            await context.bot.send_message(
+                chat_id=user[0], 
+                text=f"⭐ **СПЕЦИАЛЬНО ДЛЯ TELEGRAM PREMIUM** ⭐\n\n{msg.text}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            failed += 1
+            logger.error(f"Ошибка отправки {user[0]}: {e}")
+    
+    result_text = f"📊 **ОТЧЕТ О РАССЫЛКЕ (TELEGRAM PREMIUM)**\n\n👥 Найдено Premium: {total}\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}"
+    await context.bot.send_message(chat_id=update.effective_user.id, text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
+    context.user_data.pop('premium_broadcast_mode', None)
+    context.user_data.pop('premium_broadcast_message', None)
 
 # ==================== ОСНОВНОЙ ОБРАБОТЧИК ====================
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1199,6 +1302,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('broadcast_mode'):
             context.user_data['broadcast_message'] = update.message
             await update.message.reply_text("📨 Подтвердите рассылку", reply_markup=get_broadcast_confirm_keyboard(get_total_users()))
+            return
+        
+        if context.user_data.get('premium_broadcast_mode'):
+            context.user_data['premium_broadcast_message'] = update.message
+            await update.message.reply_text(
+                f"⭐ Подтвердите рассылку для Telegram Premium пользователей\n\n"
+                f"⚠️ Бот проверит всех пользователей и отправит сообщение только тем, у кого есть Telegram Premium.\n\n"
+                f"Это может занять время в зависимости от количества пользователей.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Отправить", callback_data="premium_broadcast_confirm"),
+                     InlineKeyboardButton("❌ Отмена", callback_data="premium_broadcast_cancel")]
+                ])
+            )
             return
 
         if not is_bot_enabled() and not is_admin(user.id):
@@ -1389,8 +1505,17 @@ async def group_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(
             text=f"🚫 **ЗАБЛОКИРОВАН**\n\n👑 Админ: @{escape_markdown(admin.username or admin.first_name)}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Разблокировать", callback_data=f"unblock_{user_id}")]])
+            reply_markup=get_group_keyboard(user_id, is_published=False)  # Обновляем кнопки
         )
+        
+        # Отправляем уведомление пользователю
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="🚫 Вы были заблокированы администратором!\n\n❌ Вы не можете отправлять объявления и создавать тикеты.\n\nДля разблокировки обратитесь к администратору."
+            )
+        except:
+            pass
 
     elif data.startswith("unblock_"):
         user_id = int(parts[1])
@@ -1398,8 +1523,17 @@ async def group_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(
             text=f"✅ **РАЗБЛОКИРОВАН**\n\n👑 Админ: @{escape_markdown(admin.username or admin.first_name)}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚫 Заблокировать", callback_data=f"block_{user_id}")]])
+            reply_markup=get_group_keyboard(user_id, is_published=False)  # Обновляем кнопки
         )
+        
+        # Отправляем уведомление пользователю
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ Вы были разблокированы администратором!\n\n✨ Вы снова можете отправлять объявления и создавать тикеты."
+            )
+        except:
+            pass
 
     elif data.startswith("reply_to_user_"):
         user_id = int(parts[3])
@@ -1419,7 +1553,7 @@ async def run_bot():
     logger.info("ЗАПУСК БОТА")
     logger.info("=" * 50)
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).connect_timeout(60).read_timeout(60).write_timeout(60).pool_timeout(60).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
@@ -1427,14 +1561,21 @@ async def run_bot():
     app.add_handler(CommandHandler("levels", levels_command))
     app.add_handler(CommandHandler("getid", get_chat_id))
     app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^(admin_|users_page_|user_stats_|broadcast_|ticket_|send_msg_)"))
+    app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^(admin_|users_page_|user_stats_|broadcast_|ticket_|send_msg_|premium_broadcast_)"))
     app.add_handler(CallbackQueryHandler(group_action_handler, pattern="^(publish_|delete_|block_|republish_|unblock_|reply_to_user_|cancel_reply)"))
     app.add_handler(CallbackQueryHandler(ticket_view_handler, pattern="^ticket_view_"))
     app.add_handler(MessageHandler(filters.ALL, message_handler))
 
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook удален")
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
+    
+    await app.updater.start_polling(drop_pending_updates=True, timeout=60)
 
     logger.info("✅ Бот успешно запущен!")
 
