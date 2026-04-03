@@ -201,12 +201,13 @@ def update_last_ticket_time(user_id):
 
 # ==================== ФУНКЦИИ ДЛЯ TELEGRAM PREMIUM ====================
 async def is_telegram_premium(user_id, context):
-    """Проверить, есть ли у пользователя Telegram Premium (без отправки сообщения)"""
+    """Проверить, есть ли у пользователя Telegram Premium (правильная проверка)"""
     try:
         chat = await context.bot.get_chat(user_id)
-        return getattr(chat, 'premium', False)
+        # Правильная проверка - поле is_premium
+        return getattr(chat, 'is_premium', False)
     except Exception as e:
-        logger.error(f"Ошибка проверки Premium статуса {user_id}: {e}")
+        logger.warning(f"Не удалось проверить Premium статус {user_id}: {e}")
         return False
 
 async def get_telegram_premium_users(context):
@@ -219,18 +220,21 @@ async def get_telegram_premium_users(context):
     
     premium_users = []
     total = len(all_users)
+    checked = 0
     
-    for i, user in enumerate(all_users):
+    for user in all_users:
+        checked += 1
         try:
             if await is_telegram_premium(user[0], context):
                 premium_users.append(user)
-        except:
-            pass
+                logger.info(f"✅ Найден Premium пользователь: {user[1] or user[2]} (ID: {user[0]})")
+        except Exception as e:
+            logger.error(f"Ошибка проверки {user[0]}: {e}")
         
-        # Небольшая задержка чтобы не спамить API
-        if i % 50 == 0:
-            await asyncio.sleep(0.1)
+        if checked % 20 == 0:
+            await asyncio.sleep(0.05)
     
+    logger.info(f"📊 Найдено Premium пользователей: {len(premium_users)} из {total}")
     return premium_users
 
 # ==================== ФУНКЦИИ БД ====================
@@ -646,11 +650,9 @@ def get_group_keyboard(user_id, is_published=False):
     if is_published:
         return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Выложить еще раз", callback_data=f"republish_{user_id}")]])
     
-    # Проверяем, заблокирован ли пользователь
     is_blocked = is_user_blocked(user_id)
     
     if is_blocked:
-        # Показываем кнопку разблокировки
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Разблокировать", callback_data=f"unblock_{user_id}")]
         ])
@@ -852,9 +854,11 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "admin_premium_broadcast":
         context.user_data['premium_broadcast_mode'] = True
         await query.edit_message_text(
-            f"⭐ **РАССЫЛКА ДЛЯ TELEGRAM PREMIUM**\n\n"
+            f"⭐ **РАССЫЛКА ДЛЯ TELEGRAM PREMIUM** ⭐\n\n"
             f"📨 Введите сообщение для рассылки только пользователям с Telegram Premium:\n\n"
-            f"⚠️ Поиск всех Premium пользователей может занять некоторое время.",
+            f"⚠️ Бот проверит всех пользователей через API Telegram.\n"
+            f"⚠️ Пользователи должны были хотя бы раз написать боту.\n\n"
+            f"⏱️ Это может занять некоторое время.",
             parse_mode=ParseMode.MARKDOWN
         )
     elif data == "admin_spam":
@@ -1095,14 +1099,23 @@ async def start_premium_broadcast(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     msg = context.user_data['premium_broadcast_message']
     
-    await query.edit_message_text("⭐ Ищу пользователей с Telegram Premium... Это может занять время.")
+    await query.edit_message_text("⭐ Ищу пользователей с Telegram Premium...\n\n⏱️ Это может занять время...")
     
-    # Получаем всех Premium пользователей
     premium_users = await get_telegram_premium_users(context)
     total = len(premium_users)
     
     if total == 0:
-        await query.edit_message_text("❌ Не найдено пользователей с Telegram Premium!", reply_markup=get_admin_keyboard())
+        await query.edit_message_text(
+            f"❌ **Не найдено пользователей с Telegram Premium!**\n\n"
+            f"⚠️ **Возможные причины:**\n"
+            f"• У пользователей нет Telegram Premium\n"
+            f"• Пользователи не начинали диалог с ботом\n"
+            f"• Пользователи заблокировали бота\n\n"
+            f"💡 Для проверки используйте команду:\n"
+            f"`/check_premium ID`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_admin_keyboard()
+        )
         context.user_data.pop('premium_broadcast_mode', None)
         context.user_data.pop('premium_broadcast_message', None)
         return
@@ -1125,7 +1138,7 @@ async def start_premium_broadcast(update: Update, context: ContextTypes.DEFAULT_
             failed += 1
             logger.error(f"Ошибка отправки {user[0]}: {e}")
     
-    result_text = f"📊 **ОТЧЕТ О РАССЫЛКЕ (TELEGRAM PREMIUM)**\n\n👥 Найдено Premium: {total}\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}"
+    result_text = f"📊 **ОТЧЕТ О РАССЫЛКЕ (TELEGRAM PREMIUM)**\n\n⭐ Найдено Premium: {total}\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}"
     await context.bot.send_message(chat_id=update.effective_user.id, text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
     context.user_data.pop('premium_broadcast_mode', None)
     context.user_data.pop('premium_broadcast_message', None)
@@ -1307,9 +1320,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('premium_broadcast_mode'):
             context.user_data['premium_broadcast_message'] = update.message
             await update.message.reply_text(
-                f"⭐ Подтвердите рассылку для Telegram Premium пользователей\n\n"
-                f"⚠️ Бот проверит всех пользователей и отправит сообщение только тем, у кого есть Telegram Premium.\n\n"
-                f"Это может занять время в зависимости от количества пользователей.",
+                f"⭐ **Подтвердите рассылку для Telegram Premium пользователей**\n\n"
+                f"⚠️ Бот проверит всех пользователей через API Telegram.\n"
+                f"⚠️ Сообщение получат только пользователи с активной подпиской Telegram Premium.\n"
+                f"⚠️ Пользователи должны были хотя бы раз написать боту.\n\n"
+                f"⏱️ Это может занять время в зависимости от количества пользователей.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Отправить", callback_data="premium_broadcast_confirm"),
                      InlineKeyboardButton("❌ Отмена", callback_data="premium_broadcast_cancel")]
@@ -1505,10 +1520,9 @@ async def group_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(
             text=f"🚫 **ЗАБЛОКИРОВАН**\n\n👑 Админ: @{escape_markdown(admin.username or admin.first_name)}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=get_group_keyboard(user_id, is_published=False)  # Обновляем кнопки
+            reply_markup=get_group_keyboard(user_id, is_published=False)
         )
         
-        # Отправляем уведомление пользователю
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -1523,10 +1537,9 @@ async def group_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(
             text=f"✅ **РАЗБЛОКИРОВАН**\n\n👑 Админ: @{escape_markdown(admin.username or admin.first_name)}",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=get_group_keyboard(user_id, is_published=False)  # Обновляем кнопки
+            reply_markup=get_group_keyboard(user_id, is_published=False)
         )
         
-        # Отправляем уведомление пользователю
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -1547,6 +1560,36 @@ async def group_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data.pop('reply_to_user', None)
         await query.edit_message_text("❌ Отменено", reply_markup=None)
 
+# ==================== ДОПОЛНИТЕЛЬНАЯ КОМАНДА ДЛЯ ПРОВЕРКИ ====================
+async def check_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверить Premium статус пользователя (для админов)"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Нет прав")
+        return
+    
+    if len(context.args) < 1:
+        await update.message.reply_text("ℹ️ Используйте: `/check_premium [ID пользователя]`\n\nПример: `/check_premium 123456789`", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    try:
+        user_id = int(context.args[0])
+        chat = await context.bot.get_chat(user_id)
+        is_prem = getattr(chat, 'is_premium', False)
+        
+        status_text = "✅ **Есть Telegram Premium**" if is_prem else "❌ **Нет Telegram Premium**"
+        
+        await update.message.reply_text(
+            f"👤 **Информация о пользователе**\n\n"
+            f"🆔 ID: `{user_id}`\n"
+            f"📝 Имя: {escape_markdown(chat.first_name or 'Не указано')}\n"
+            f"👥 Username: @{escape_markdown(chat.username or 'нет')}\n"
+            f"⭐ Telegram Premium: {status_text}\n\n"
+            f"💡 Если у пользователя есть Premium, но бот показывает 'Нет' - возможно пользователь не начинал диалог с ботом.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}\n\nПользователь не найден или не взаимодействовал с ботом.")
+
 # ==================== ЗАПУСК ====================
 async def run_bot():
     logger.info("=" * 50)
@@ -1561,6 +1604,7 @@ async def run_bot():
     app.add_handler(CommandHandler("levels", levels_command))
     app.add_handler(CommandHandler("getid", get_chat_id))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("check_premium", check_premium_command))
     app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^(admin_|users_page_|user_stats_|broadcast_|ticket_|send_msg_|premium_broadcast_)"))
     app.add_handler(CallbackQueryHandler(group_action_handler, pattern="^(publish_|delete_|block_|republish_|unblock_|reply_to_user_|cancel_reply)"))
     app.add_handler(CallbackQueryHandler(ticket_view_handler, pattern="^ticket_view_"))
