@@ -678,7 +678,8 @@ def get_broadcast_confirm_keyboard(total_users):
 
 def get_ticket_keyboard(ticket_id, user_id):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Ответить", callback_data=f"ticket_reply_{ticket_id}"), InlineKeyboardButton("✅ Закрыть", callback_data=f"ticket_close_{ticket_id}")],
+        [InlineKeyboardButton("✏️ Ответить", callback_data=f"ticket_reply_{ticket_id}"),
+         InlineKeyboardButton("✅ Закрыть", callback_data=f"ticket_close_{ticket_id}")],
         [InlineKeyboardButton("🚫 Заблокировать", callback_data=f"ticket_block_{user_id}_{ticket_id}")]
     ])
 
@@ -858,16 +859,43 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['reply_to_ticket'] = ticket_id
         await query.edit_message_text(f"✏️ **Ответ на тикет #{ticket_id}**\n\nНапишите ваш ответ.\n\nДля отмены /cancel")
     elif data.startswith("ticket_close_"):
-        ticket_id = data.split("_")[2]
-        close_ticket(ticket_id, user.id)
-        await query.edit_message_text(f"✅ Тикет #{ticket_id} закрыт", reply_markup=get_admin_keyboard())
+        parts = data.split("_")
+        if len(parts) >= 3:
+            ticket_id = parts[2]
+            close_ticket(ticket_id, user.id)
+            
+            target_user_id = get_ticket_user_id(ticket_id)
+            if target_user_id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=f"✅ Ваш тикет #{ticket_id} был закрыт администратором.\nСпасибо за обращение!"
+                    )
+                except:
+                    pass
+            
+            await query.edit_message_text(f"✅ Тикет #{ticket_id} закрыт", reply_markup=get_admin_keyboard())
+        else:
+            await query.edit_message_text("❌ Ошибка: неверный формат данных")
     elif data.startswith("ticket_block_"):
         parts = data.split("_")
-        user_id = int(parts[2])
-        ticket_id = parts[3]
-        block_user(user_id)
-        close_ticket(ticket_id, user.id)
-        await query.edit_message_text(f"🚫 Пользователь заблокирован\n✅ Тикет #{ticket_id} закрыт", reply_markup=get_admin_keyboard())
+        if len(parts) >= 4:
+            user_id = int(parts[2])
+            ticket_id = parts[3]
+            block_user(user_id)
+            close_ticket(ticket_id, user.id)
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="🚫 Вы были заблокированы администратором за нарушение правил!"
+                )
+            except:
+                pass
+            
+            await query.edit_message_text(f"🚫 Пользователь {user_id} заблокирован\n✅ Тикет #{ticket_id} закрыт", reply_markup=get_admin_keyboard())
+        else:
+            await query.edit_message_text("❌ Ошибка: неверный формат данных")
 
 async def show_bot_settings(query):
     enabled = is_bot_enabled()
@@ -907,17 +935,65 @@ async def show_tickets_page(query, context):
     c.execute("SELECT ticket_id, user_id, username, first_name, message, created_at FROM tickets WHERE status = 'open' ORDER BY created_at DESC")
     tickets = c.fetchall()
     conn.close()
+    
     if not tickets:
         await query.edit_message_text("✅ Нет открытых тикетов", reply_markup=get_admin_keyboard())
         return
+    
     text = "🎫 **ОТКРЫТЫЕ ТИКЕТЫ**\n\n"
+    buttons = []
+    
     for t in tickets:
         ticket_id, user_id, username, first_name, message, created_at = t
         short_msg = escape_markdown(message[:40] + "..." if len(message) > 40 else message)
         created = datetime.fromisoformat(created_at).strftime('%d.%m %H:%M')
-        username_str = f"@{escape_markdown(username)}" if username else "нет"
+        username_str = f"@{escape_markdown(username)}" if username else f"ID:{user_id}"
+        
         text += f"**#{ticket_id}** от {username_str}\n📝 {short_msg}\n🕐 {created}\n\n"
-    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]]))
+        buttons.append([InlineKeyboardButton(f"📝 #{ticket_id} - {username_str[:20]}", callback_data=f"ticket_view_{ticket_id}")])
+    
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_back")])
+    
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(buttons))
+
+async def ticket_view_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = query.from_user
+    
+    if not is_admin(user.id):
+        await query.edit_message_text("❌ Нет прав")
+        return
+    
+    ticket_id = data.split("_")[2]
+    
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT ticket_id, user_id, username, first_name, message, created_at, status FROM tickets WHERE ticket_id = ?", (ticket_id,))
+    ticket = c.fetchone()
+    conn.close()
+    
+    if not ticket:
+        await query.edit_message_text("❌ Тикет не найден", reply_markup=get_admin_keyboard())
+        return
+    
+    ticket_id, user_id, username, first_name, message, created_at, status = ticket
+    
+    text = f"🎫 **ТИКЕТ #{ticket_id}**\n\n"
+    text += f"👤 Пользователь: @{escape_markdown(username or 'нет')} (ID: `{user_id}`)\n"
+    text += f"📝 Сообщение: {escape_markdown(message)}\n"
+    text += f"🕐 Создан: {datetime.fromisoformat(created_at).strftime('%d.%m.%Y %H:%M')}\n"
+    text += f"📊 Статус: {'🟢 Открыт' if status == 'open' else '🔴 Закрыт'}"
+    
+    keyboard = [
+        [InlineKeyboardButton("✏️ Ответить", callback_data=f"ticket_reply_{ticket_id}"),
+         InlineKeyboardButton("✅ Закрыть", callback_data=f"ticket_close_{ticket_id}")],
+        [InlineKeyboardButton("🚫 Заблокировать", callback_data=f"ticket_block_{user_id}_{ticket_id}"),
+         InlineKeyboardButton("🔙 Назад", callback_data="admin_tickets")]
+    ]
+    
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1343,6 +1419,7 @@ async def run_bot():
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^(admin_|users_page_|user_stats_|broadcast_|ticket_|send_msg_)"))
     app.add_handler(CallbackQueryHandler(group_action_handler, pattern="^(publish_|delete_|block_|republish_|unblock_|reply_to_user_|cancel_reply)"))
+    app.add_handler(CallbackQueryHandler(ticket_view_handler, pattern="^ticket_view_"))
     app.add_handler(MessageHandler(filters.ALL, message_handler))
 
     await app.initialize()
