@@ -1632,7 +1632,7 @@ async def run_bot():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
-
+hello
 def main():
     try:
         asyncio.run(run_bot())
