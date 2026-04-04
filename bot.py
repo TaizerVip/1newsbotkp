@@ -199,44 +199,6 @@ def update_last_ticket_time(user_id):
     except Exception as e:
         logger.error(f"Ошибка update_last_ticket_time: {e}")
 
-# ==================== ФУНКЦИИ ДЛЯ TELEGRAM PREMIUM ====================
-async def is_telegram_premium(user_id, context):
-    """Проверить, есть ли у пользователя Telegram Premium (правильная проверка)"""
-    try:
-        chat = await context.bot.get_chat(user_id)
-        # Правильная проверка - поле is_premium
-        return getattr(chat, 'is_premium', False)
-    except Exception as e:
-        logger.warning(f"Не удалось проверить Premium статус {user_id}: {e}")
-        return False
-
-async def get_telegram_premium_users(context):
-    """Получить всех пользователей с Telegram Premium"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT user_id, username, first_name FROM users")
-    all_users = c.fetchall()
-    conn.close()
-    
-    premium_users = []
-    total = len(all_users)
-    checked = 0
-    
-    for user in all_users:
-        checked += 1
-        try:
-            if await is_telegram_premium(user[0], context):
-                premium_users.append(user)
-                logger.info(f"✅ Найден Premium пользователь: {user[1] or user[2]} (ID: {user[0]})")
-        except Exception as e:
-            logger.error(f"Ошибка проверки {user[0]}: {e}")
-        
-        if checked % 20 == 0:
-            await asyncio.sleep(0.05)
-    
-    logger.info(f"📊 Найдено Premium пользователей: {len(premium_users)} из {total}")
-    return premium_users
-
 # ==================== ФУНКЦИИ БД ====================
 def get_user_stats(user_id):
     try:
@@ -673,8 +635,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton("🔍 Поиск пользователя", callback_data="admin_search")],
         [InlineKeyboardButton("🏆 Топ", callback_data="admin_top")],
         [InlineKeyboardButton(tickets_button, callback_data="admin_tickets")],
-        [InlineKeyboardButton("📨 Рассылка (всем)", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("⭐ Рассылка (Telegram Premium)", callback_data="admin_premium_broadcast")],
+        [InlineKeyboardButton("📨 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton("💣 СПАМ РАССЫЛКА", callback_data="admin_spam")],
         [InlineKeyboardButton("💬 Отправить сообщение", callback_data="admin_send_message")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="admin_settings")],
@@ -735,7 +696,8 @@ def get_users_navigation_keyboard(page, total_pages):
 
 def get_broadcast_confirm_keyboard(total_users):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Отправить", callback_data="broadcast_confirm"), InlineKeyboardButton("❌ Отмена", callback_data="broadcast_cancel")],
+        [InlineKeyboardButton("✅ Отправить", callback_data="broadcast_confirm"), 
+         InlineKeyboardButton("❌ Отмена", callback_data="broadcast_cancel")],
         [InlineKeyboardButton(f"👥 Всего: {total_users} пользователей", callback_data="ignore")]
     ])
 
@@ -851,16 +813,6 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "admin_broadcast":
         context.user_data['broadcast_mode'] = True
         await query.edit_message_text(f"📨 Введите сообщение для рассылки\n\n👥 Будет отправлено: {get_total_users()} пользователям")
-    elif data == "admin_premium_broadcast":
-        context.user_data['premium_broadcast_mode'] = True
-        await query.edit_message_text(
-            f"⭐ **РАССЫЛКА ДЛЯ TELEGRAM PREMIUM** ⭐\n\n"
-            f"📨 Введите сообщение для рассылки только пользователям с Telegram Premium:\n\n"
-            f"⚠️ Бот проверит всех пользователей через API Telegram.\n"
-            f"⚠️ Пользователи должны были хотя бы раз написать боту.\n\n"
-            f"⏱️ Это может занять некоторое время.",
-            parse_mode=ParseMode.MARKDOWN
-        )
     elif data == "admin_spam":
         context.user_data['spam_mode'] = True
         await query.edit_message_text("💣 **СПАМ РАССЫЛКА**\n\nВведите: `ID количество текст`\nПример: `123456789 500 Привет!`")
@@ -923,15 +875,6 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "broadcast_cancel":
         context.user_data.pop('broadcast_mode', None)
         context.user_data.pop('broadcast_message', None)
-        await query.edit_message_text("❌ Отменено", reply_markup=get_admin_keyboard())
-    elif data == "premium_broadcast_confirm":
-        if 'premium_broadcast_message' in context.user_data:
-            await start_premium_broadcast(update, context)
-        else:
-            await query.edit_message_text("❌ Сообщение не найдено")
-    elif data == "premium_broadcast_cancel":
-        context.user_data.pop('premium_broadcast_mode', None)
-        context.user_data.pop('premium_broadcast_message', None)
         await query.edit_message_text("❌ Отменено", reply_markup=get_admin_keyboard())
     elif data.startswith("ticket_reply_"):
         ticket_id = data.split("_")[2]
@@ -1094,54 +1037,6 @@ async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_user.id, text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
     context.user_data.pop('broadcast_mode', None)
     context.user_data.pop('broadcast_message', None)
-
-async def start_premium_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    msg = context.user_data['premium_broadcast_message']
-    
-    await query.edit_message_text("⭐ Ищу пользователей с Telegram Premium...\n\n⏱️ Это может занять время...")
-    
-    premium_users = await get_telegram_premium_users(context)
-    total = len(premium_users)
-    
-    if total == 0:
-        await query.edit_message_text(
-            f"❌ **Не найдено пользователей с Telegram Premium!**\n\n"
-            f"⚠️ **Возможные причины:**\n"
-            f"• У пользователей нет Telegram Premium\n"
-            f"• Пользователи не начинали диалог с ботом\n"
-            f"• Пользователи заблокировали бота\n\n"
-            f"💡 Для проверки используйте команду:\n"
-            f"`/check_premium ID`",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=get_admin_keyboard()
-        )
-        context.user_data.pop('premium_broadcast_mode', None)
-        context.user_data.pop('premium_broadcast_message', None)
-        return
-    
-    await query.edit_message_text(f"⭐ Найдено {total} Premium пользователей!\n\n📨 Начинаю рассылку...")
-    
-    sent = 0
-    failed = 0
-    
-    for user in premium_users:
-        try:
-            await context.bot.send_message(
-                chat_id=user[0], 
-                text=f"⭐ **СПЕЦИАЛЬНО ДЛЯ TELEGRAM PREMIUM** ⭐\n\n{msg.text}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            sent += 1
-            await asyncio.sleep(0.05)
-        except Exception as e:
-            failed += 1
-            logger.error(f"Ошибка отправки {user[0]}: {e}")
-    
-    result_text = f"📊 **ОТЧЕТ О РАССЫЛКЕ (TELEGRAM PREMIUM)**\n\n⭐ Найдено Premium: {total}\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}"
-    await context.bot.send_message(chat_id=update.effective_user.id, text=result_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_keyboard())
-    context.user_data.pop('premium_broadcast_mode', None)
-    context.user_data.pop('premium_broadcast_message', None)
 
 # ==================== ОСНОВНОЙ ОБРАБОТЧИК ====================
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1315,21 +1210,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('broadcast_mode'):
             context.user_data['broadcast_message'] = update.message
             await update.message.reply_text("📨 Подтвердите рассылку", reply_markup=get_broadcast_confirm_keyboard(get_total_users()))
-            return
-        
-        if context.user_data.get('premium_broadcast_mode'):
-            context.user_data['premium_broadcast_message'] = update.message
-            await update.message.reply_text(
-                f"⭐ **Подтвердите рассылку для Telegram Premium пользователей**\n\n"
-                f"⚠️ Бот проверит всех пользователей через API Telegram.\n"
-                f"⚠️ Сообщение получат только пользователи с активной подпиской Telegram Premium.\n"
-                f"⚠️ Пользователи должны были хотя бы раз написать боту.\n\n"
-                f"⏱️ Это может занять время в зависимости от количества пользователей.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Отправить", callback_data="premium_broadcast_confirm"),
-                     InlineKeyboardButton("❌ Отмена", callback_data="premium_broadcast_cancel")]
-                ])
-            )
             return
 
         if not is_bot_enabled() and not is_admin(user.id):
@@ -1560,36 +1440,6 @@ async def group_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data.pop('reply_to_user', None)
         await query.edit_message_text("❌ Отменено", reply_markup=None)
 
-# ==================== ДОПОЛНИТЕЛЬНАЯ КОМАНДА ДЛЯ ПРОВЕРКИ ====================
-async def check_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверить Premium статус пользователя (для админов)"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Нет прав")
-        return
-    
-    if len(context.args) < 1:
-        await update.message.reply_text("ℹ️ Используйте: `/check_premium [ID пользователя]`\n\nПример: `/check_premium 123456789`", parse_mode=ParseMode.MARKDOWN)
-        return
-    
-    try:
-        user_id = int(context.args[0])
-        chat = await context.bot.get_chat(user_id)
-        is_prem = getattr(chat, 'is_premium', False)
-        
-        status_text = "✅ **Есть Telegram Premium**" if is_prem else "❌ **Нет Telegram Premium**"
-        
-        await update.message.reply_text(
-            f"👤 **Информация о пользователе**\n\n"
-            f"🆔 ID: `{user_id}`\n"
-            f"📝 Имя: {escape_markdown(chat.first_name or 'Не указано')}\n"
-            f"👥 Username: @{escape_markdown(chat.username or 'нет')}\n"
-            f"⭐ Telegram Premium: {status_text}\n\n"
-            f"💡 Если у пользователя есть Premium, но бот показывает 'Нет' - возможно пользователь не начинал диалог с ботом.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}\n\nПользователь не найден или не взаимодействовал с ботом.")
-
 # ==================== ЗАПУСК ====================
 async def run_bot():
     logger.info("=" * 50)
@@ -1604,8 +1454,7 @@ async def run_bot():
     app.add_handler(CommandHandler("levels", levels_command))
     app.add_handler(CommandHandler("getid", get_chat_id))
     app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CommandHandler("check_premium", check_premium_command))
-    app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^(admin_|users_page_|user_stats_|broadcast_|ticket_|send_msg_|premium_broadcast_)"))
+    app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern="^(admin_|users_page_|user_stats_|broadcast_|ticket_|send_msg_)"))
     app.add_handler(CallbackQueryHandler(group_action_handler, pattern="^(publish_|delete_|block_|republish_|unblock_|reply_to_user_|cancel_reply)"))
     app.add_handler(CallbackQueryHandler(ticket_view_handler, pattern="^ticket_view_"))
     app.add_handler(MessageHandler(filters.ALL, message_handler))
@@ -1632,7 +1481,7 @@ async def run_bot():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
-hello
+
 def main():
     try:
         asyncio.run(run_bot())
