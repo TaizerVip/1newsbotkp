@@ -13,11 +13,12 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
-BOT_TOKEN = "8769116926:AAEibjee9f8KNliD68pznm-5lLziHCUtxcs"
-ADMIN_IDS = [8135803663]
-GROUP_CHAT_ID = -1003698229252
-SUPPORT_CHAT_ID = -1003698229252
-CHANNEL_ID = "@proverkabotkp"
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_IDS = [int(id) for id in os.environ.get('ADMIN_IDS', '').split(',') if id]
+GROUP_CHAT_ID = int(os.environ.get('GROUP_CHAT_ID', '0'))
+SUPPORT_CHAT_ID = int(os.environ.get('SUPPORT_CHAT_ID', '0'))
+CHANNEL_ID = os.environ.get('CHANNEL_ID')
+
 
 DB_FILE = 'bot_data.db'
 
