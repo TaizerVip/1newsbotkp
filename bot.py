@@ -13,12 +13,11 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_IDS = [int(id) for id in os.environ.get('ADMIN_IDS', '').split(',') if id]
-GROUP_CHAT_ID = int(os.environ.get('GROUP_CHAT_ID', '0'))
-SUPPORT_CHAT_ID = int(os.environ.get('SUPPORT_CHAT_ID', '0'))
-CHANNEL_ID = os.environ.get('CHANNEL_ID')
-
+BOT_TOKEN = "8769116926:AAEibjee9f8KNliD68pznm-5lLziHCUtxcs"
+ADMIN_IDS = [8135803663]
+GROUP_CHAT_ID = -1003698229252
+SUPPORT_CHAT_ID = -1003698229252
+CHANNEL_ID = "@proverkabotkp"
 
 DB_FILE = 'bot_data.db'
 
@@ -134,7 +133,7 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('channel_id', ?)", (CHANNEL_ID,))
     c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('cooldown_minutes', '10')")
     c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('cooldown_enabled', '1')")
-    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('ai_pepel_enabled', '0')")  # Новая настройка
+    c.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('ai_pepel_enabled', '0')")
 
     default_welcome = """✋ Здравствуйте, {name}!
 
@@ -541,12 +540,10 @@ def get_ai_pepel_stats():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # Считаем сколько объявлений опубликовано через ИИ PEPEL сегодня
     today = date.today().isoformat()
     c.execute("SELECT COUNT(*) FROM stats WHERE date = ?", (today,))
     today_posts = c.fetchone()[0] or 0
     
-    # Считаем общее количество опубликованных объявлений
     c.execute("SELECT COALESCE(SUM(ads_published), 0) FROM users")
     total_posts = c.fetchone()[0] or 0
     
@@ -561,11 +558,6 @@ def get_ai_pepel_stats():
 
 # ==================== ИИ PEPEL - ПРОВЕРКА ОБЪЯВЛЕНИЙ ====================
 def check_username_in_text(text: str, expected_username: str) -> tuple[bool, str]:
-    """
-    Проверяет:
-    1) Есть ли @username в тексте
-    2) Совпадает ли он с юзернеймом отправителя
-    """
     if not expected_username:
         return False, "❌ У вас не установлен username в Telegram!"
     
@@ -581,19 +573,13 @@ def check_username_in_text(text: str, expected_username: str) -> tuple[bool, str
 
 
 def check_keywords_or_numbers(text: str) -> tuple[bool, str]:
-    """
-    Проверяет наличие ключевых слов или любой цифры
-    Ключевые слова: продам, селл, сел, sel, sell, куплю, продаже, продаю, вылетает, торг, цена
-    """
     keywords = ['продам', 'селл', 'сел', 'sel', 'sell', 'куплю', 'продаже', 'продаю', 'вылетает', 'торг', 'цена']
     text_lower = text.lower()
     
-    # Проверка ключевых слов
     for keyword in keywords:
         if keyword in text_lower:
             return True, f"✅ Найдено ключевое слово: {keyword}"
     
-    # Проверка наличия любой цифры
     if re.search(r'\d', text):
         return True, "✅ Найдена цифра в тексте"
     
@@ -601,7 +587,6 @@ def check_keywords_or_numbers(text: str) -> tuple[bool, str]:
 
 
 def check_text_length(text: str) -> tuple[bool, str]:
-    """Проверяет длину текста от 15 до 2000 символов"""
     length = len(text)
     if length < 15:
         return False, f"❌ Текст слишком короткий ({length} символов). Минимум 15 символов"
@@ -611,26 +596,18 @@ def check_text_length(text: str) -> tuple[bool, str]:
 
 
 def validate_ad_for_ai_pepel(text: str, username: str) -> tuple[bool, str, dict]:
-    """
-    Полная проверка объявления для ИИ PEPEL
-    Возвращает (прошла_проверку, сообщение, детали)
-    """
     details = {}
-    errors = []
     
-    # 1. Проверка длины
     length_ok, length_msg = check_text_length(text)
     if not length_ok:
         return False, length_msg, {}
     details['length'] = len(text)
     
-    # 2. Проверка username в тексте и совпадение
     username_ok, username_msg = check_username_in_text(text, username)
     if not username_ok:
         return False, username_msg, {}
     details['username_match'] = True
     
-    # 3. Проверка ключевых слов или цифр
     keywords_ok, keywords_msg = check_keywords_or_numbers(text)
     if not keywords_ok:
         return False, keywords_msg, {}
@@ -784,6 +761,34 @@ async def levels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown')
 
 
+# ==================== КОМАНДА /search ====================
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /search - поиск пользователя по ID или username"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Нет прав")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Использование: /search <id или @username>")
+        return
+    
+    search_term = " ".join(context.args)
+    found = find_user_by_username_or_id(search_term)
+    
+    if found:
+        uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user, last_ad_time = found
+        info = (f"👤 **{first_name or 'Без имени'}**\n"
+                f"ID: `{uid}`\n"
+                f"@{username or 'нет'}\n"
+                f"📤 {sent} | 📥 {published}\n"
+                f"⭐ {rating} очков\n"
+                f"👑 Админ: {'Да' if is_admin_user else 'Нет'}\n"
+                f"{'❌ Заблокирован' if is_blocked else '✅ Активен'}")
+        await update.message.reply_text(info, parse_mode='Markdown', reply_markup=get_user_action_keyboard(uid, is_blocked))
+    else:
+        await update.message.reply_text("❌ Пользователь не найден")
+
+
 # ==================== КЛАВИАТУРЫ ====================
 def get_main_keyboard():
     keyboard = [
@@ -903,26 +908,48 @@ def get_ticket_keyboard(ticket_id: str, user_id: int):
     ])
 
 
-# ==================== ПОИСК ПОЛЬЗОВАТЕЛЯ ====================
+# ==================== ПОИСК ПОЛЬЗОВАТЕЛЯ (ИСПРАВЛЕННЫЙ) ====================
 def find_user_by_username_or_id(search_term):
     try:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
+        
+        logger.info(f"🔍 Поиск пользователя по: '{search_term}'")
+        
+        # Пробуем как ID (число)
         try:
             user_id = int(search_term)
             c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
             result = c.fetchone()
             if result:
+                logger.info(f"✅ Найден по ID: {user_id}")
                 conn.close()
                 return result
-        except:
+        except ValueError:
             pass
 
-        username = search_term.replace('@', '').lower()
-        c.execute("SELECT * FROM users WHERE LOWER(username) = ?", (username,))
-        result = c.fetchone()
+        # Пробуем как username (без @, в любом регистре)
+        username = search_term.replace('@', '').lower().strip()
+        if username:
+            c.execute("SELECT * FROM users WHERE LOWER(username) = ?", (username,))
+            result = c.fetchone()
+            if result:
+                logger.info(f"✅ Найден по username: {username}")
+                conn.close()
+                return result
+        
+        # Поиск по части username (если точное совпадение не найдено)
+        if username and len(username) > 2:
+            c.execute("SELECT * FROM users WHERE LOWER(username) LIKE ? LIMIT 5", (f'%{username}%',))
+            results = c.fetchall()
+            if results:
+                logger.info(f"✅ Найдено {len(results)} пользователей по части username, возвращаем первого")
+                conn.close()
+                return results[0]
+        
         conn.close()
-        return result
+        logger.warning(f"❌ Пользователь не найден: '{search_term}'")
+        return None
     except Exception as e:
         logger.error(f"Ошибка поиска: {e}")
         return None
@@ -938,7 +965,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👋 Бот активен!\n\n"
             f"📋 Сюда будут приходить объявления от пользователей.\n"
             f"🔑 Используйте /admin в личке с ботом для управления.\n"
-            f"📊 Используйте /stats для просмотра статистики.",
+            f"📊 Используйте /stats для просмотра статистики.\n"
+            f"🔍 Используйте /search для поиска пользователя.",
             reply_markup=ReplyKeyboardRemove()
         )
         return
@@ -973,7 +1001,6 @@ async def admin_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         text += "Нет данных\n"
     
-    # Добавляем ИИ PEPEL в топ
     if ai_pepel_stats['total_posts'] > 0:
         text += f"🤖 **ИИ PEPEL** — {ai_pepel_stats['total_posts']} 📤\n"
     
@@ -987,7 +1014,6 @@ async def admin_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         text += "Нет данных\n"
     
-    # Добавляем ИИ PEPEL в топ за сегодня
     if ai_pepel_stats['today_posts'] > 0:
         text += f"🤖 **ИИ PEPEL** — {ai_pepel_stats['today_posts']} 📤\n"
     
@@ -1067,7 +1093,8 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data == "admin_search":
         context.user_data['search_mode'] = True
-        await query.edit_message_text("🔍 Введите ID или @username:")
+        await query.edit_message_text("🔍 Введите ID или @username для поиска:")
+        logger.info(f"🔍 Админ {user.id} включил режим поиска")
 
     elif data == "admin_top":
         top = get_top_users(10)
@@ -1260,7 +1287,8 @@ async def show_bot_settings(query):
 
 
 async def show_user_info(query, user_id):
-    user_data = find_user_by_username_or_id(str(user_id))
+    # Передаём user_id как есть (не преобразуем в str)
+    user_data = find_user_by_username_or_id(user_id)
     if not user_data:
         await query.edit_message_text("❌ Пользователь не найден")
         return
@@ -1349,32 +1377,25 @@ async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== АВТОПУБЛИКАЦИЯ ИИ PEPEL ====================
 async def auto_publish_with_ai_pepel(context: ContextTypes.DEFAULT_TYPE, message_id: int, user_id: int, text: str, username: str):
-    """Функция автопубликации через 5 секунд после поста в чат админов"""
     await asyncio.sleep(5)
     
-    # Проверяем, включен ли ИИ PEPEL
     if not is_ai_pepel_enabled():
         logger.info("ИИ PEPEL выключен, автопубликация не выполнена")
         return
     
-    # Проверяем объявление
     is_valid, validation_msg, details = validate_ad_for_ai_pepel(text, username)
     
     if is_valid:
-        # Публикуем в канал
         channel = get_channel()
         try:
-            # Копируем сообщение в канал
             await context.bot.copy_message(
                 chat_id=channel,
                 from_chat_id=GROUP_CHAT_ID,
                 message_id=message_id
             )
             
-            # Увеличиваем счетчик публикаций
             increment_published(user_id)
             
-            # Отправляем сообщение в чат админов о публикации
             await context.bot.send_message(
                 chat_id=GROUP_CHAT_ID,
                 text=f"🤖 **ИИ PEPEL** автоматически опубликовал объявление в канале!\n\n"
@@ -1400,7 +1421,6 @@ async def auto_publish_with_ai_pepel(context: ContextTypes.DEFAULT_TYPE, message
                 parse_mode='Markdown'
             )
     else:
-        # Объявление не прошло проверку - ничего не делаем, оставляем на модерацию
         logger.info(f"🤖 ИИ PEPEL: объявление от {user_id} НЕ ПРОШЛО проверку: {validation_msg}")
 
 
@@ -1410,11 +1430,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     text = update.message.text if update.message.text else ""
 
-    # ===== ЛИЧНЫЕ СООБЩЕНИЯ =====
     if chat.type == "private":
         logger.info(f"📩 Личное сообщение от {user.id}: {text[:50] if text else 'медиа'}")
 
-        # Режим отправки сообщения пользователю (админ)
         if context.user_data.get('send_message_mode'):
             parts = text.split(' ', 1)
             if len(parts) >= 2:
@@ -1435,7 +1453,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('send_message_mode')
             return
 
-        # Режим отправки сообщения выбранному пользователю
         if context.user_data.get('send_message_target'):
             target_id = context.user_data['send_message_target']
             try:
@@ -1448,7 +1465,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('send_message_target')
             return
 
-        # ===== ОТВЕТ ПОЛЬЗОВАТЕЛЮ ОТ АДМИНА =====
         if context.user_data.get('reply_to_user'):
             target_user_id = context.user_data['reply_to_user']
             reply_text = text
@@ -1550,6 +1566,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if context.user_data.get('search_mode'):
+            logger.info(f"🔍 Режим поиска. Ввод: {text}")
             found = find_user_by_username_or_id(text)
             if found:
                 uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user, last_ad_time = found
@@ -1563,11 +1580,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(info, parse_mode='Markdown',
                                                 reply_markup=get_user_action_keyboard(uid, is_blocked))
             else:
-                await update.message.reply_text("❌ Не найден")
+                await update.message.reply_text("❌ Пользователь не найден")
             context.user_data.pop('search_mode')
             return
 
-        # ===== ОТВЕТ НА ТИКЕТ В ЛИЧКЕ =====
         if context.user_data.get('reply_to_ticket'):
             ticket_id = context.user_data['reply_to_ticket']
             reply_text = text
@@ -1722,7 +1738,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data.pop('awaiting_ad')
                     return
 
-                # Отправляем объявление в чат админов
                 sent_message = await update.message.forward(GROUP_CHAT_ID)
                 
                 user_data = get_user_stats(user.id)
@@ -1743,7 +1758,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("✅ Объявление отправлено на модерацию!",
                                                 reply_markup=get_main_keyboard())
                 
-                # Запускаем автопубликацию ИИ PEPEL через 5 секунд
                 asyncio.create_task(auto_publish_with_ai_pepel(
                     context, 
                     sent_message.message_id, 
@@ -1778,12 +1792,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             pass
 
-    # ===== ГРУППЫ (чат админов) =====
     elif chat.type in ["group", "supergroup"]:
         if chat.id == GROUP_CHAT_ID or chat.id == SUPPORT_CHAT_ID:
             logger.info(f"📢 Сообщение в чате админов от {user.id}: {text[:50] if text else 'медиа'}")
             
-            # ===== ОТВЕТ ПОЛЬЗОВАТЕЛЮ ОТ АДМИНА В ЧАТЕ АДМИНОВ =====
             if context.user_data.get('reply_to_user'):
                 target_user_id = context.user_data['reply_to_user']
                 reply_text = text
@@ -1809,7 +1821,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data.pop('reply_to_user')
                 return
             
-            # Проверяем, находится ли админ в режиме ответа на тикет
             if context.user_data.get('reply_to_ticket'):
                 ticket_id = context.user_data['reply_to_ticket']
                 reply_text = text
@@ -1847,7 +1858,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data.pop('reply_to_ticket')
                 return
             
-            # Если сообщение не является ответом, игнорируем
             logger.info(f"Сообщение в чате админов не является ответом, игнорируем")
 
 
@@ -2018,6 +2028,7 @@ async def run_bot():
     app.add_handler(CommandHandler("levels", levels_command))
     app.add_handler(CommandHandler("getid", get_chat_id))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("search", search_command))  # Добавлена команда /search
     app.add_handler(CallbackQueryHandler(admin_callback_handler,
                                          pattern="^(admin_|users_page_|user_stats_|broadcast_|ticket_|send_msg_)"))
     app.add_handler(CallbackQueryHandler(group_action_handler, pattern="^(publish_|delete_|block_|republish_|unblock_|reply_to_user_|cancel_reply)"))
