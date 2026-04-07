@@ -1571,28 +1571,38 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('remove_admin_mode')
             return
 
-        if context.user_data.get('search_mode'):
-            logger.info(f"🔍 Режим поиска. Ввод: {text}")
-            found = find_user_by_username_or_id(text)
-            if found:
-                # Безопасная распаковка
-                if len(found) >= 10:
-                    uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user, last_ad_time = found
-                else:
-                    uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user = found[:9]
-                info = (f"👤 **{first_name or 'Без имени'}**\n"
-                        f"ID: `{uid}`\n"
-                        f"@{username or 'нет'}\n"
-                        f"📤 {sent} | 📥 {published}\n"
-                        f"⭐ {rating} очков\n"
-                        f"👑 Админ: {'Да' if is_admin_user else 'Нет'}\n"
-                        f"{'❌ Заблокирован' if is_blocked else '✅ Активен'}")
-                await update.message.reply_text(info, parse_mode='Markdown',
-                                                reply_markup=get_user_action_keyboard(uid, is_blocked))
-            else:
-                await update.message.reply_text("❌ Пользователь не найден")
+       if context.user_data.get('search_mode'):
+    logger.info(f"🔍 Режим поиска. Ввод: {text}")
+    found = find_user_by_username_or_id(text)
+    if found:
+        # Безопасная распаковка с проверкой количества полей
+        if len(found) >= 10:
+            uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user, last_ad_time = found
+        elif len(found) == 9:
+            uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user = found
+            last_ad_time = None
+        elif len(found) == 8:
+            uid, username, first_name, reg_date, sent, published, rating, is_blocked = found
+            is_admin_user = False
+            last_ad_time = None
+        else:
+            await update.message.reply_text("❌ Неизвестная структура данных пользователя")
             context.user_data.pop('search_mode')
             return
+        
+        info = (f"👤 **{first_name or 'Без имени'}**\n"
+                f"ID: `{uid}`\n"
+                f"@{username or 'нет'}\n"
+                f"📤 {sent} | 📥 {published}\n"
+                f"⭐ {rating} очков\n"
+                f"👑 Админ: {'Да' if is_admin_user else 'Нет'}\n"
+                f"{'❌ Заблокирован' if is_blocked else '✅ Активен'}")
+        await update.message.reply_text(info, parse_mode='Markdown',
+                                        reply_markup=get_user_action_keyboard(uid, is_blocked))
+    else:
+        await update.message.reply_text("❌ Пользователь не найден")
+    context.user_data.pop('search_mode')
+    return
 
         if context.user_data.get('reply_to_ticket'):
             ticket_id = context.user_data['reply_to_ticket']
