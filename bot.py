@@ -1292,7 +1292,13 @@ async def show_user_info(query, user_id):
     if not user_data:
         await query.edit_message_text("❌ Пользователь не найден")
         return
-    uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user, last_ad_time = user_data
+    # Проверяем количество полей для безопасной распаковки
+    if len(user_data) == 10:
+        uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user, last_ad_time = user_data
+    else:
+        # Если полей меньше, распаковываем с запасом
+        uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user = user_data[:9]
+        last_ad_time = None
     text = (f"👤 **{first_name or 'Без имени'}**\n"
             f"ID: `{uid}`\n"
             f"@{username or 'нет'}\n"
@@ -1569,7 +1575,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"🔍 Режим поиска. Ввод: {text}")
             found = find_user_by_username_or_id(text)
             if found:
-                uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user, last_ad_time = found
+                # Безопасная распаковка
+                if len(found) >= 10:
+                    uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user, last_ad_time = found
+                else:
+                    uid, username, first_name, reg_date, sent, published, rating, is_blocked, is_admin_user = found[:9]
                 info = (f"👤 **{first_name or 'Без имени'}**\n"
                         f"ID: `{uid}`\n"
                         f"@{username or 'нет'}\n"
@@ -2028,7 +2038,7 @@ async def run_bot():
     app.add_handler(CommandHandler("levels", levels_command))
     app.add_handler(CommandHandler("getid", get_chat_id))
     app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CommandHandler("search", search_command))  # Добавлена команда /search
+    app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CallbackQueryHandler(admin_callback_handler,
                                          pattern="^(admin_|users_page_|user_stats_|broadcast_|ticket_|send_msg_)"))
     app.add_handler(CallbackQueryHandler(group_action_handler, pattern="^(publish_|delete_|block_|republish_|unblock_|reply_to_user_|cancel_reply)"))
